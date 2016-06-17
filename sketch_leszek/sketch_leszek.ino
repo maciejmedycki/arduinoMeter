@@ -15,39 +15,33 @@ Timezone myTimeZone(utc1, utc2);
 TimeChangeRule *tcr;        //pointer to the time change rule, use to get myTimeZone abbrev
 time_t utc, localTime;
 
-const byte currentPin = A0;
-const byte voltagePin = A1;
-const byte interruptPin = 2;
+#define currentPin   A0
+#define voltagePin   A1
+#define interruptPin  2
 
-String utcString;
-String localTimeString;
+#define voltageDividerRatio  11.0 //voltage divider ratio
 
-float currentRaw;
+#define serialOutputInterval 2000 //serial output interval in ms
+#define LCDOutputInterval    3000 //LCD display change interval in ms
+#define saveToSdInterval     60000//Save to SD card interval in ms
+
+
+
 float currentMapped;
-
-float voltageRaw ;
 float voltageMapped;
 
-unsigned int pulsesCount;
-
-String dataString ;//stores data to be displayed on LCD and serial
-
 unsigned long lastSerialOutput = 0;//when data was last displayed on Serial Port
-const unsigned long serialOutputInterval = 2000;//serial output interval in ms
-
 unsigned long lastLCDOutput = 0;//when data was last changed on LCD Display
-const unsigned long LCDOutputInterval = 3000;//LCD display change interval in ms
-
-unsigned long lastRPMCheck = 0;//when RPM was last time calculated
-
 unsigned long lastSaveToSd = 0;//when data was saved to SD last time
-const unsigned long saveToSdInterval = 60000;//Save to SD card interval in ms
-bool sdInitialized = false;
-String SDmessage = "";
 
-volatile unsigned int pulseCounter = 0;
-volatile unsigned long firstPulseMillis = 0;
-unsigned int rpm = 0;
+bool sdInitialized = false;//indicates whether SD card was sucessfully initialized
+bool sdError       = false;//indicates if error occured while saving to sd Card
+
+unsigned long currentMillis = 0;
+
+//RPM volatiles
+volatile unsigned long lastPulseMicros = 0;
+volatile unsigned int  rpm = 0;
 
 void setup() {
   //serial
@@ -62,19 +56,19 @@ void setup() {
   lcd.setCursor(0, 0);
   lcd.print("Hello Leszek");
   Serial.println("Hello Leszek");
-  delay(500);
 
   //RTC
   setSyncProvider(RTC.get);   // the function to get the time from the RTC
 
   if (timeStatus() != timeSet) {
+    delay(500);
     Serial.println("Unable to sync time with the RTC");
     lcd.clear();
     lcd.print("RTC sync error!");
   }
   /*else
-   Serial.println("RTC has set the system time");
-   */
+    Serial.println("RTC has set the system time");
+  */
 
   //interrupt for RPM
   pinMode(interruptPin, INPUT_PULLUP);
@@ -82,61 +76,100 @@ void setup() {
 
   //init SD card
   initSD();
-  lcd.setCursor(0, 1);
-  lcd.print(SDmessage);
-  delay(500);
 }
 
 void loop() {
+  currentMillis = millis();
+
   //rtc date time
   utc = now();
   localTime = myTimeZone.toLocal(utc, &tcr);
 
-  utcString = timeToString(utc);
-  localTimeString = timeToString(localTime);
+  String utcString = timeToString(utc);
+  String localTimeString = timeToString(localTime);
 
-  //datalogger
+  //creating datalogger string
   //datetime
-  dataString = utcString + "," + localTimeString;
+  String dataString = utcString + "," + localTimeString;//stores data to be displayed on serial port and stored to SD card
 
   //current
-  currentRaw = analogReadOversample(currentPin);//66mV/A  0A = 2,5V 1A = 2,566V -1A = 2,434V 0V=0 5V=1023
+  float currentRaw = analogReadOversample(currentPin);//66mV/A  0A = 2,5V 1A = 2,566V -1A = 2,434V 0V=0 5V=1023
   currentMapped = ((5000. * currentRaw / 1023.) - 2500) / 66.; //calculation in mV and then (XmV/(66mV/1A))
   dataString += "," + String(currentRaw) + "," + String(currentMapped);
 
   //voltage
-  voltageRaw = analogReadOversample(voltagePin);
-  voltageMapped = (5 * voltageRaw / 1023.) ;//V
+  float voltageRaw = analogReadOversample(voltagePin);
+  voltageMapped = (voltageDividerRatio * voltageRaw / 1023.) ;//V
   dataString += "," + String(voltageRaw) + "," + String(voltageMapped);
 
   //rpm
-  pulsesCount = pulseCounter;
-  unsigned long currentMillis = millis();
-  unsigned long deltaT =  (unsigned long)(currentMillis - lastRPMCheck);
-  dataString += "," + String(pulsesCount) + "," + String(deltaT);
-
-  if (pulsesCount > 20 || deltaT > 5000 || lastRPMCheck == 0) {
-    rpm = pulsesCount * 60000 / deltaT ;
-    pulseCounter = 0;
-    lastRPMCheck = currentMillis;
-    Serial.println("start: " + String(firstPulseMillis) + " end: " + String(currentMillis) + " count: " + String(pulsesCount) + " rpm: " + String(rpm));
-  }
-
   dataString += "," + String(rpm);
 
   //Printout data to serial
+  printOnSerial(dataString);
+
+  //lcd display data
+  updateLcd(String(currentMapped, 1) + "A " + String(rpm) + " " + String(voltageMapped, 1) + "V", localTimeString);//TODO: what about RPMs?
+
+  //saving to sd card
+  saveToSdCard(dataString, localTimeString);
+
+  //setup date and time throught serial port data. Use YYYY-MM-DD HH:mm:SS format add T prefix (e.g. T2016-05-16 08:12:23). Remember to add zeros.
+  setupDateTimeFromSerialPort();
+}
+
+//handler for interruptPin interrupt
+void pulseISR() {
+  unsigned long currentMicros = micros();
+  rpm = (60000000 / (unsigned long)(currentMicros - lastPulseMicros));
+  lastPulseMicros = currentMicros;
+}
+
+//initializes SD card
+void initSD() {
+  sdInitialized = SD.begin(10);
+  if (sdInitialized) {
+    Serial.println("SD Card initialized.");
+  }
+  else {
+    Serial.println("SD Card failed or not present");
+  }
+}
+
+//prints on serial port every serialOutputInterval 
+void  printOnSerial(String dataString) {
   if ((unsigned long)(currentMillis - lastSerialOutput) >= serialOutputInterval || lastSerialOutput == 0) {
     lastSerialOutput = currentMillis;
     Serial.println(dataString);
   }
+}
 
-  //lcd display data
-  updateLcd(currentMillis);
+//updates LCD display every LCDOutputInterval
+void updateLcd(String firstLine, String secondLine) { //prints out data on LCD display
+  if ((unsigned long)(currentMillis - lastLCDOutput) >= LCDOutputInterval || lastLCDOutput == 0) {
+    lastLCDOutput = currentMillis;
+    lcd.clear();
+    lcd.print(firstLine);
+    lcd.setCursor(0, 1);
+    if (!sdInitialized) {
+      secondLine = "SD init error " + secondLine;
+    }
+    if (sdInitialized && !sdError) {
+      secondLine = "SD write error " + secondLine;
+    }
+    lcd.print(secondLine);
+    int moveCount = max(firstLine.length() - 16, secondLine.length() - 16);
+    if (moveCount > 0) {
+      for (int i = 0; i <= moveCount; i++) {
+        delay(150);
+        lcd.scrollDisplayLeft();
+      }
+    }
+  }
+}
 
-  //setup date and time throught serial port data. Use YYYY-MM-DD HH:mm:SS format add T prefix (e.g. T2016-05-16 08:12:23). Remember to add zeros.
-  setupDateTimeFromSerialPort();
-
-  //saving to sd card
+//saves to SD card every saveToSdInterval
+void saveToSdCard(String dataString, String localTimeString) {
   if ((unsigned long)(currentMillis - lastSaveToSd) >= saveToSdInterval || lastSaveToSd == 0) {
     lastSaveToSd = currentMillis;
     if (!sdInitialized) {
@@ -150,61 +183,20 @@ void loop() {
       File dataFile = SD.open(fileName, FILE_WRITE);
       // if the file is available, write to it:
       if (dataFile) {
+        sdError = false;
         dataFile.println(dataString);
         dataFile.close();
-        SDmessage = "Data saved to SD";
+        Serial.println("Data saved to SD file " + fileName);
       }
       else { // file save error
         Serial.println("Error on saving to " + fileName);
-        SDmessage = "Data save error!";
+        sdError = true;
       }
     }
   }
 }
 
-void pulseISR() {
-  if (pulseCounter == 0) {
-    firstPulseMillis = millis();
-  }
-  pulseCounter++;
-}
-
-void initSD() {
-  sdInitialized = SD.begin(10);
-  if (sdInitialized) {
-    SDmessage = "SD Card ok";
-    Serial.println("SD Card initialized.");
-  }
-  else {
-    Serial.println("SD Card failed or not present");
-    SDmessage = "SD Card error!";
-  }
-}
-
-void updateLcd(unsigned long currentMillis) { //prints out data on LCD display
-  if ((unsigned long)(currentMillis - lastLCDOutput) >= LCDOutputInterval || lastLCDOutput == 0) {
-    lastLCDOutput = currentMillis;
-    lcd.clear();
-    //show date and time or rpms
-    /*
-    if (loopCounter % 10 > 5) {
-      lcd.print(String(currentMapped, 1) + "A " + String(voltageMapped, 1) + "V");
-      lcd.setCursor(0, 1);
-      lcd.print(String(rpm) + "o/m" + " " + String(pulsesCount));
-    }
-    else {
-      lcd.print(SDmessage);
-      lcd.setCursor(0, 1);
-      lcd.print(localTimeString);
-    }
-    */
-    lcd.print(String(currentMapped, 1) + "A " + String(rpm) + " " + String(pulsesCount));
-    lcd.setCursor(0, 1);
-    lcd.print(localTimeString);
-  }
-}
-
-//read serial for setting date and time(YYYY-MM-DD HH:mm:SS) add T prefix (e.g. T2016-05-16 08:12:23)
+//reads serial for setting date and time(YYYY-MM-DD HH:mm:SS) add T prefix (e.g. T2016-05-16 08:12:23) use all the zeros
 void setupDateTimeFromSerialPort() {
   if (Serial.available() > 0) {
     String incomingDateTime = Serial.readString();
@@ -217,6 +209,7 @@ void setupDateTimeFromSerialPort() {
   }
 }
 
+//performs some analogRead with simple oversampling
 float analogReadOversample(int pin) {
   int sum = 0;
   for (int i = 0; i < 10; i++) {
@@ -226,10 +219,12 @@ float analogReadOversample(int pin) {
   return sum / 10.;
 }
 
+//helper for formatting time to string
 String timeToString(time_t t) {
   return formatToPlaces(year(t), 4) + "-" + formatToPlaces(month(t), 2) + "-" + formatToPlaces(day(t), 2) + " " + formatToPlaces(hour(t), 2) + ":" + formatToPlaces(minute(t), 2) + ":" + formatToPlaces(second(t), 2);
 }
 
+//formats int value to given places
 String formatToPlaces(int value, int places) {
   String s = String(value);
   while (s.length() != places) {

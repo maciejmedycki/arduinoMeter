@@ -15,15 +15,15 @@ Timezone myTimeZone(utc1, utc2);
 TimeChangeRule *tcr;        //pointer to the time change rule, use to get myTimeZone abbrev
 time_t utc, localTime;
 
-#define currentPin   A0
-#define voltagePin   A1
+static const uint8_t currentPin = A0;
+static const uint8_t voltagePin = A1;
 #define interruptPin  2
 
-#define voltageDividerRatio  11.0 //voltage divider ratio
+#define voltageDividerRatio  14.58150834 //voltage divider ratio
 
 #define serialOutputInterval 2000 //serial output interval in ms
 #define LCDOutputInterval    3000 //LCD display change interval in ms
-#define saveToSdInterval     60000//Save to SD card interval in ms
+#define saveToSdInterval     300000//Save to SD card interval in ms
 
 
 
@@ -94,12 +94,12 @@ void loop() {
 
   //current
   float currentRaw = analogReadOversample(currentPin);//66mV/A  0A = 2,5V 1A = 2,566V -1A = 2,434V 0V=0 5V=1023
-  currentMapped = ((5000. * currentRaw / 1023.) - 2500) / 66.; //calculation in mV and then (XmV/(66mV/1A))
+  currentMapped = (510. - currentRaw) * 0.074054326254; //calculation in mV and then (XmV/(66mV/1A))
   dataString += "," + String(currentRaw) + "," + String(currentMapped);
 
   //voltage
   float voltageRaw = analogReadOversample(voltagePin);
-  voltageMapped = (voltageDividerRatio * voltageRaw / 1023.) ;//V
+  voltageMapped = (voltageDividerRatio * voltageRaw * 0.00488758) ;//V
   dataString += "," + String(voltageRaw) + "," + String(voltageMapped);
 
   //rpm
@@ -136,7 +136,7 @@ void initSD() {
   }
 }
 
-//prints on serial port every serialOutputInterval 
+//prints on serial port every serialOutputInterval
 void  printOnSerial(String dataString) {
   if ((unsigned long)(currentMillis - lastSerialOutput) >= serialOutputInterval || lastSerialOutput == 0) {
     lastSerialOutput = currentMillis;
@@ -158,13 +158,12 @@ void updateLcd(String firstLine, String secondLine) { //prints out data on LCD d
       secondLine = "SD write error " + secondLine;
     }
     lcd.print(secondLine);
-    int moveCount = max(firstLine.length() - 16, secondLine.length() - 16);
-    if (moveCount > 0) {
-      for (int i = 0; i <= moveCount; i++) {
-        delay(150);
-        lcd.scrollDisplayLeft();
-      }
+    int moveCount = max(firstLine.length(), secondLine.length());
+    for (int i = 16; i <= moveCount; i++) {
+      delay(300);
+      lcd.scrollDisplayLeft();
     }
+    rpm = 0;//just to clear if there is no more movement detected
   }
 }
 

@@ -159,10 +159,12 @@ void updateLcd(String firstLine, String secondLine) { //prints out data on LCD d
     }
     lcd.print(secondLine);
     int moveCount = max(firstLine.length(), secondLine.length());
-    for (int i = 16; i <= moveCount; i++) {
+    delay(1000);
+    for (int i = 16; i < moveCount; i++) {
       delay(300);
       lcd.scrollDisplayLeft();
     }
+    delay(500);
     rpm = 0;//just to clear if there is no more movement detected
   }
 }
